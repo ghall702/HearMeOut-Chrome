@@ -1,0 +1,35 @@
+{
+  "name": "hearmeout-chrome",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Hear Me Out for Chrome — record and share voice notes from any tab.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "build:e2e": "vite build --mode e2e",
+    "dev": "vite build --watch --mode development",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "npm run build:e2e && node tests/e2e/run.mjs",
+    "icons": "node scripts/make-icons.mjs",
+    "package": "npm run build && node scripts/package.mjs"
+  },
+  "dependencies": {
+    "@fontsource/manrope": "^5.3.0",
+    "lucide-react": "^0.575.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.3.7",
+    "@types/node": "^22.16.5",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "fake-indexeddb": "^6.2.8",
+    "jsdom": "^26.0.0",
+    "typescript": "^5.8.3",
+    "vite": "8.1.5",
+    "vitest": "^4.1.10"
+  }
+}

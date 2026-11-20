@@ -1,0 +1,8 @@
+node_modules/
+dist/
+dist-e2e/
+release/
+*.log
+.DS_Store
+.env*
+*.pem
