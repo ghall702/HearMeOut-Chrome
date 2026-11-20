@@ -77,6 +77,7 @@ function PermissionPage() {
             Click the microphone or tune icon at the right of the address bar on this page and choose <strong>Allow</strong>, then reload.
             On a Mac, also check <strong>System Settings → Privacy &amp; Security → Microphone</strong> and make sure Google Chrome is switched on.
             On Windows 11, check <strong>Settings → Privacy &amp; security → Microphone</strong>.
+            On a Chromebook, check <strong>Settings → Security and privacy → Privacy controls → Microphone access</strong>.
           </p>
           <button type="button" className="btn btn-outline btn-block" onClick={() => location.reload()}>Reload</button>
         </>

@@ -4,15 +4,37 @@ Record a voice note from any tab, keep working while it records, and copy it in 
 the website you're on. That means an email card in Gmail or Outlook, an HTML embed in Moodle, and a
 link anywhere else.
 
-It's a Manifest V3 extension for **Google Chrome on macOS and Windows 11**. It uses the existing Hear
+It's a Manifest V3 extension for **Google Chrome on Windows 11, macOS and Chromebooks**. It uses the existing Hear
 Me Out service (`https://hearmeout.george-hall.uk`) and the media server
 (`https://mediahub-lm-1.georgehalltuition.com`). It has no backend, database or audio hosting of its own.
+
+<p>
+<img src="docs/screenshots/02-ready-gmail.png" width="190" alt="Ready to record, Gmail detected">
+<img src="docs/screenshots/03-recording.png" width="190" alt="Recording">
+<img src="docs/screenshots/06-share-gmail.png" width="190" alt="Share for Gmail">
+<img src="docs/screenshots/13-dark-recording.png" width="190" alt="Dark mode">
+</p>
+
+## Quick start: install without building anything
+
+**→ [Step-by-step install guide for Windows 11, macOS and Chromebook, with screenshots](docs/INSTALL.md)**
+
+In short:
+
+1. Download [`download/HearMeOut-for-Chrome.zip`](download/HearMeOut-for-Chrome.zip) and unzip it
+   somewhere permanent.
+2. Go to `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and choose the
+   `HearMeOut-for-Chrome` folder.
+3. Click the icon, then **Sign in with Google**. You only do this once per Chrome profile, and you
+   stay signed in.
+
+The rest of this README is the technical reference.
 
 ---
 
 ## Contents
 
-1. [Install (load unpacked)](#install-load-unpacked)
+1. [Build from source](#build-from-source)
 2. [One-off backend step](#one-off-backend-step)
 3. [Using it](#using-it)
 4. [How background recording works](#how-background-recording-works)
@@ -27,7 +49,11 @@ Me Out service (`https://hearmeout.george-hall.uk`) and the media server
 
 ---
 
-## Install (load unpacked)
+## Build from source
+
+You only need this to change the code. To install the extension, use
+[`download/HearMeOut-for-Chrome.zip`](download/HearMeOut-for-Chrome.zip) and the
+[install guide](docs/INSTALL.md).
 
 Requirements: Node.js 22 or later, and npm. You need these only to build. The built extension has no
 runtime dependencies and needs no local server.
@@ -46,6 +72,9 @@ The build goes into `dist/`. Then, on each Chrome profile you want to use:
 2. Turn on **Developer mode** (top right).
 3. Click **Load unpacked** and choose the `dist` folder.
 4. Pin **Hear Me Out** from the puzzle-piece menu so the REC indicator is always visible.
+
+After changing code, run `npm run package:download` to refresh the downloadable zip, and
+`npm run screenshots` (on Linux: `xvfb-run -a npm run screenshots`) to refresh `docs/screenshots/`.
 
 The manifest contains a public `key`, so the extension ID is always
 **`lphpbndpbbdgoglbgglgeckecbeilpjn`** in every profile and on every computer. That's the ID the
@@ -306,7 +335,8 @@ reflects the [Permissions, privacy and security](#permissions-privacy-and-securi
 * **"Microphone blocked"**: open the permission tab (Settings → Microphone → *Allow microphone*)
   and allow it. On macOS, check *System Settings → Privacy & Security → Microphone → Google
   Chrome*. On Windows 11, check *Settings → Privacy & security → Microphone* and turn on *Let
-  desktop apps access your microphone*.
+  desktop apps access your microphone*. On a Chromebook, check *Settings → Security and privacy →
+  Privacy controls → Microphone access*.
 * **Sign-in window says page not found**: the backend patch isn't deployed yet.
 * **"That Google account isn't authorised"**: only the allow-listed accounts can use Hear Me Out.
 * **Upload failed**: the recording is safe. Click **Retry upload**. Persistent 5xx errors come from

@@ -113,7 +113,7 @@ function LibraryItem({ item, ctx, open, onToggle, onToast }: { item: RecordingIt
           {ready && (
             <>
               <button type="button" className="btn btn-hero btn-block" onClick={() => copy(ctx.format, item)}>
-                <Sparkles /> {actionLabel(ctx.format, ctx)}{ctx.name ? ` · ${ctx.name}` : ""}
+                <Sparkles /> {actionLabel(ctx.format, ctx)}
               </button>
               <ShareOptions item={item} ctx={ctx} onToast={onToast} />
             </>

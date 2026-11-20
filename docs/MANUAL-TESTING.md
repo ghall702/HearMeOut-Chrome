@@ -1,9 +1,12 @@
-# Manual test plan: Chrome on macOS and Windows 11
+# Manual test plan: Chrome on macOS, Windows 11 and ChromeOS
 
 The automated e2e suite (`npm run test:e2e`) runs in Chromium on Linux with a fake microphone. It
 can't use a real microphone, the macOS or Windows privacy controls, or real desktop apps such as Word
 and Excel. Run this checklist once on **each** platform: current Google Chrome on macOS, and current
-Google Chrome on Windows 11.
+Google Chrome on Windows 11, and a Chromebook (ChromeOS). Install from
+[`download/HearMeOut-for-Chrome.zip`](../download/HearMeOut-for-Chrome.zip) by following
+[INSTALL.md](INSTALL.md). On the Chromebook, use any non-browser app (for example the Files app or
+an Android app) in place of Word or Excel.
 
 Before you start:
 
@@ -36,6 +39,7 @@ Record each result as Pass or Fail, with notes.
 | B1 | On a fresh profile, click the record button. | A tab asks for microphone access. Choose **Allow**, then **Start recording now**. The tab closes and the badge shows **REC**. |
 | B2 | Record again later. | There's no permission prompt. |
 | B3 | **macOS:** System Settings → Privacy & Security → Microphone → turn Google Chrome off, then try to record. | You get a clear error that the microphone couldn't be started. Turn it back on afterwards. |
+| B3c | **ChromeOS:** Settings → Security and privacy → Privacy controls → turn *Microphone access* off, then try to record. | The same clear error. Turn it back on afterwards. |
 | B4 | **Windows:** Settings → Privacy & security → Microphone → turn *Let desktop apps access your microphone* off, then try to record. | The same clear error. Turn it back on afterwards. |
 
 ## C. Background recording (the acceptance test)

@@ -40,10 +40,12 @@ export function startMockServers() {
     const k = (req.headers.authorization ?? "").replace(/^Bearer /, "");
     return keys.has(k) && !revoked.has(k);
   };
+  // SHARE_ORIGIN lets the screenshot script show realistic links; tests use the local server.
+  const so = process.env.SHARE_ORIGIN ?? "http://127.0.0.1:8787";
   const share = (token) => ({
-    shareUrl: `http://127.0.0.1:8787/s/${token}`,
-    embedUrl: `http://127.0.0.1:8787/embed/${token}`,
-    embedCode: `<iframe src="http://127.0.0.1:8787/embed/${token}" width="100%" height="152" frameborder="0" allow="autoplay" style="border-radius:16px;max-width:560px" title="Hear Me Out voice note"></iframe>`,
+    shareUrl: `${so}/s/${token}`,
+    embedUrl: `${so}/embed/${token}`,
+    embedCode: `<iframe src="${so}/embed/${token}" width="100%" height="152" frameborder="0" allow="autoplay" style="border-radius:16px;max-width:560px" title="Hear Me Out voice note"></iframe>`,
   });
 
   const api = http.createServer(async (req, res) => {

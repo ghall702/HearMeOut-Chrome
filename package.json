@@ -2,7 +2,7 @@
   "name": "hearmeout-chrome",
   "private": true,
   "version": "1.0.0",
-  "description": "Hear Me Out for Chrome — record and share voice notes from any tab.",
+  "description": "Hear Me Out for Chrome \u2014 record and share voice notes from any tab.",
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && vite build",
@@ -12,7 +12,9 @@
     "test": "vitest run",
     "test:e2e": "npm run build:e2e && node tests/e2e/run.mjs",
     "icons": "node scripts/make-icons.mjs",
-    "package": "npm run build && node scripts/package.mjs"
+    "package": "npm run build && node scripts/package.mjs",
+    "package:download": "npm run build && node scripts/package.mjs --download",
+    "screenshots": "npm run build:e2e && node scripts/screenshots.mjs"
   },
   "dependencies": {
     "@fontsource/manrope": "^5.3.0",
