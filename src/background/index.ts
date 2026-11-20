@@ -9,7 +9,7 @@ import { FORMAT_LABELS, clipboardPayload } from "../shared/share";
 import { formatClock } from "../shared/timing";
 import { IDLE_STATE } from "../shared/types";
 import { hmoApi } from "./api";
-import { AuthError, authSummary, onSignedIn, signIn, signOut } from "./auth";
+import { AuthError, authSummary, signIn, signOut } from "./auth";
 import { notify } from "./notify";
 import { closeOffscreenIfIdle, ensureOffscreen, sendOff } from "./offscreen-host";
 import { lastResult, onUploadDone, onUploadFailed, onUploadProgress, savePipeline } from "./pipeline";
@@ -61,7 +61,6 @@ async function handle(msg: BgRequest): Promise<unknown> {
       return authSummary();
     case "auth:signin": {
       const user = await signIn();
-      await onSignedIn();
       return { signedIn: true, user };
     }
     case "auth:signout": {

@@ -21,7 +21,7 @@ export function buildManifest({ version, hmoOrigin, mediaOrigin, includeKey = tr
     },
     icons: { 16: "icons/icon-16.png", 32: "icons/icon-32.png", 48: "icons/icon-48.png", 128: "icons/icon-128.png" },
     background: { service_worker: "background.js", type: "module" },
-    permissions: ["storage", "offscreen", "identity", "alarms", "notifications", "activeTab", "scripting", "clipboardWrite"],
+    permissions: ["storage", "unlimitedStorage", "offscreen", "identity", "alarms", "notifications", "activeTab", "scripting", "clipboardWrite"],
     host_permissions: [`${hmoOrigin}/*`, `${mediaOrigin}/*`],
     commands: {
       _execute_action: { suggested_key: { default: "Alt+Shift+H", mac: "Alt+Shift+H" }, description: "Open Hear Me Out" },

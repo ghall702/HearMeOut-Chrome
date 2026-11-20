@@ -17,7 +17,15 @@ export function startMockServers() {
     requests: [],
   };
   const user = { id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890", email: "ghall702@gmail.com", name: "George Hall", avatar_url: null };
-  const session = () => ({ access_token: `h.${randomUUID()}.s`, refresh_token: randomUUID(), expires_at: Math.floor(Date.now() / 1000) + 3600, user });
+  const keys = new Set();
+  const revoked = new Set();
+  const newKey = () => {
+    const k = "hmo_" + (randomUUID() + randomUUID()).replace(/-/g, "").slice(0, 48);
+    keys.add(k);
+    return k;
+  };
+  state.keys = keys;
+  state.revoked = revoked;
   const json = (res, status, body) => {
     res.writeHead(status, { "content-type": "application/json", "access-control-allow-origin": "*" });
     res.end(JSON.stringify(body));
@@ -28,7 +36,10 @@ export function startMockServers() {
       req.on("data", (c) => chunks.push(c));
       req.on("end", () => resolve(Buffer.concat(chunks)));
     });
-  const authed = (req) => /^Bearer h\./.test(req.headers.authorization ?? "");
+  const authed = (req) => {
+    const k = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+    return keys.has(k) && !revoked.has(k);
+  };
   const share = (token) => ({
     shareUrl: `http://127.0.0.1:8787/s/${token}`,
     embedUrl: `http://127.0.0.1:8787/embed/${token}`,
@@ -51,15 +62,14 @@ export function startMockServers() {
       const b = JSON.parse((await body(req)).toString() || "{}");
       if (b.grant_type === "token_hash" && b.token_hash === "grant123") {
         state.tokenExchanges++;
-        return json(res, 200, session());
-      }
-      if (b.grant_type === "refresh_token") {
-        state.refreshes++;
-        return json(res, 200, session());
+        return json(res, 200, { api_key: newKey(), user });
       }
       return json(res, 401, { error: "invalid_grant" });
     }
     if (url.pathname === "/api/public/v1/extension/signout") {
+      const k = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+      if (!keys.has(k)) return json(res, 401, { error: "unauthorised" });
+      revoked.add(k);
       state.signouts++;
       return json(res, 200, { ok: true });
     }

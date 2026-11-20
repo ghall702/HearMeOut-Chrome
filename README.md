@@ -54,10 +54,10 @@ backend allow-list uses. After you rebuild, click the reload icon on the extensi
 
 ## One-off backend step
 
-Extension sign-in needs a small addition to the Hear Me Out app: an approval page and a token
-exchange. It's in [`backend/`](backend/README.md) as a single patch, with no database changes and no
-new secrets. Apply it to the app, deploy, and optionally set
-`HMO_EXTENSION_IDS=lphpbndpbbdgoglbgglgeckecbeilpjn`. Until it's deployed, **Sign in with Google**
+Extension sign-in needs a small addition to the Hear Me Out app: an approval page and a step that
+issues this profile's key. Paste [`backend/LOVABLE-PROMPT.md`](backend/LOVABLE-PROMPT.md) into
+Lovable (or `git apply backend/hearmeout-extension-auth.patch`). It needs no database changes and no
+new secrets, but set the non-secret `HMO_EXTENSION_IDS=lphpbndpbbdgoglbgglgeckecbeilpjn`. Until it's deployed, **Sign in with Google**
 will show a "page not found" in the sign-in window.
 
 ## Using it
@@ -198,20 +198,22 @@ can review and save.
 
 ## Authentication and Chrome profiles
 
-* **Sign in with Google** uses `chrome.identity.launchWebAuthFlow`. It opens the Hear Me Out web
-  app's own Google sign-in, so the app's OAuth set-up and **account allow-list** stay in charge.
-  You approve the connection, and the extension receives a single-use grant on its private
-  `https://<id>.chromiumapp.org/` callback. It exchanges that for **its own** short-lived Supabase
-  session, which is refreshed automatically. There's no API key to paste and no password prompt.
-  See [`backend/README.md`](backend/README.md) for details.
-* **Each Chrome profile is independent.** Extension storage, IndexedDB, the session, settings,
-  recordings, the cached library and badges are all separate per profile. With three profiles open
-  you get three independent extensions. There's no account switcher. To change account, switch
-  Chrome profile.
-* **Sign out** revokes the session on the server, then removes the credentials, the library cache,
-  the last share link and any unsaved recordings from this profile.
-* If a session can't be refreshed, the popup shows **Reconnect with Google**. Unsaved recordings are
-  kept until you reconnect.
+* **Sign in with Google once per Chrome profile, then stay signed in.** Sign-in uses
+  `chrome.identity.launchWebAuthFlow` to open the Hear Me Out web app's own Google sign-in, so its
+  **account allow-list** stays in charge. When you approve, the server gives this profile its own
+  **`hmo_` API key**. API keys don't expire and don't need refreshing, so Chrome restarts, laptop
+  reboots and months of not using it won't sign you out. There's nothing to paste and no password
+  prompt. See [`backend/README.md`](backend/README.md).
+* **Only two things end the connection:** clicking **Sign out** in the extension (this revokes the
+  key), or revoking it in **Hear Me Out → Settings → API keys**. Each key is listed there as
+  "Chrome extension · <date>". Network failures and server errors never sign you out. If Hear Me Out
+  ever rejects the key, the popup shows **Reconnect with Google** and keeps any unsaved recording.
+* **Each Chrome profile is independent.** The key, settings, recordings, cached library and badges
+  are all separate per profile. With three profiles open you get three independent extensions.
+  There's no account switcher; to use another account, switch Chrome profile. On a new laptop you
+  sign in once per profile again.
+* **Sign out** revokes this profile's key on the server, then removes it, the library cache, the
+  last share link and any unsaved recordings from this profile.
 
 ## Permissions, privacy and security
 
@@ -219,6 +221,7 @@ can review and save.
 |---|---|
 | `offscreen` | Hosts the recording engine that survives the popup closing. |
 | `storage` | Settings and the shared recording state. These are `local` and `session` only; `sync` is never used. |
+| `unlimitedStorage` | Stops Chrome clearing the extension's stored sign-in or unsaved audio when the disk is under pressure. |
 | `identity` | `launchWebAuthFlow` for Google sign-in. |
 | `activeTab` | Reads the current tab's address when you open the popup or use a shortcut, for website detection. It also allows the optional Gmail insertion. |
 | `scripting` | The optional **Insert into Gmail**, only when you click it. |

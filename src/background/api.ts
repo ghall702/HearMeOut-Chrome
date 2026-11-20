@@ -1,7 +1,7 @@
 // Hear Me Out public API client (service worker only — credentials never leave this context).
 import { HMO_ORIGIN } from "../shared/config";
 import type { RecordingItem } from "../shared/types";
-import { AuthError, getAccessToken } from "./auth";
+import { AuthError, getApiKey, markAccepted, markRejected } from "./auth";
 
 export class ApiError extends Error {
   constructor(
@@ -15,7 +15,6 @@ export class ApiError extends Error {
 }
 
 function friendly(status: number, code: string): string {
-  if (status === 401) return "Your Hear Me Out session has expired. Please reconnect.";
   if (status === 404) return "That recording couldn't be found.";
   if (status >= 500) return "Hear Me Out is having trouble right now. Please try again shortly.";
   return code && !/^[a-z_]+$/.test(code) ? code : `Request failed (${status}${code ? `: ${code}` : ""}).`;
@@ -33,11 +32,18 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
       throw new ApiError(0, "network", "Couldn't reach Hear Me Out. Check your connection and try again.");
     }
   };
-  let r = await call(await getAccessToken());
-  if (r.status === 401) r = await call(await getAccessToken(true));
-  if (r.status === 401) throw new AuthError("expired", "Your Hear Me Out session has expired. Please reconnect.");
+  const key = await getApiKey();
+  let r = await call(key);
+  if (r.status === 401) r = await call(key); // one retry: never disconnect on a single blip
+  if (r.status === 401) {
+    await markRejected();
+    throw new AuthError("expired", "Hear Me Out didn't accept this Chrome profile's connection (it may have been revoked). Please reconnect.");
+  }
   // Success is any 2xx (uploads returns 201 Created).
-  if (r.ok) return (await r.json()) as T;
+  if (r.ok) {
+    void markAccepted();
+    return (await r.json()) as T;
+  }
   const j = (await r.json().catch(() => ({}))) as { error?: string };
   throw new ApiError(r.status, j.error ?? "", friendly(r.status, j.error ?? ""));
 }

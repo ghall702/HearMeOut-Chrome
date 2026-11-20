@@ -21,7 +21,9 @@ Record each result as Pass or Fail, with notes.
 |---|---|---|
 | A1 | Profile 1: open the popup and click **Sign in with Google**. | A Hear Me Out window opens. If the web app is already signed in, you see "Signed in as …" and **Connect this Chrome profile**. Otherwise Google's account chooser appears. After connecting, the window closes and the popup shows Record / Library / Settings. |
 | A2 | Settings → Account. | It shows the right Google account. There's no account switcher. |
-| A3 | Restart Chrome and open the popup. | You're still signed in, with no new prompt. |
+| A3 | Quit Chrome completely, restart the computer, then open Chrome and the popup. | You're still signed in, with no prompt. Check again after a few days: still signed in. |
+| A3b | In the web app, go to Settings → API keys. | Each connected profile is listed as "Chrome extension · <date>" with a recent "Last used" date. |
+| A3c | Revoke that profile's key in the web app, then open the extension's Library. | A **Reconnect with Google** banner appears and you're not silently signed out. Reconnecting fixes it, and a new key appears in the list. |
 | A4 | Profile 2: open the popup. | You're **not** signed in. Sign in with a *different* allowed account. |
 | A5 | Library in each profile. | Each profile lists only its own account's recordings. |
 | A6 | Try signing in with a Google account that isn't on the allow-list. | "That Google account isn't authorised for Hear Me Out." No session is created. |

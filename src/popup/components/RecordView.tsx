@@ -177,7 +177,7 @@ function Review({
   }, [state.draftId, state.mime]);
 
   const isError = state.phase === "error";
-  const needsAuth = !auth.signedIn || state.step === "auth";
+  const needsAuth = !auth.signedIn || !!auth.expired || state.step === "auth";
   const note = state.recovered && state.stopReason !== "interrupted" ? STOP_NOTES["interrupted"] : state.stopReason ? STOP_NOTES[state.stopReason] : undefined;
 
   return (

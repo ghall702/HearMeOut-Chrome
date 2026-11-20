@@ -36,8 +36,8 @@ export function LibraryView({ auth, ctx, onToast }: { auth: AuthSummary; ctx: Si
       const c = r["libraryCache"] as { userId: string | null; items: RecordingItem[] } | undefined;
       if (c && c.userId === auth.user?.id) setItems((cur) => cur ?? c.items);
     });
-    void load();
-  }, [load, auth.user?.id]);
+    if (!auth.expired) void load();
+  }, [load, auth.user?.id, auth.expired]);
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();

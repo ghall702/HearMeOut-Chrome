@@ -1,35 +1,3 @@
-diff --git a/src/lib/apikeys.server.ts b/src/lib/apikeys.server.ts
-index 2060809..518f62f 100644
---- a/src/lib/apikeys.server.ts
-+++ b/src/lib/apikeys.server.ts
-@@ -8,12 +8,23 @@ export function newApiKey() {
-   return "hmo_" + [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
- }
- 
--/** Resolves an `Authorization: Bearer hmo_…` header to a user id, or null. */
-+/**
-+ * Resolves the Authorization header to a user id, or null. Accepts either
-+ *  - `Bearer hmo_…` API keys (Mac app, scripts), or
-+ *  - `Bearer <Supabase access token>` short-lived sessions (Chrome extension, see extension-auth.server.ts).
-+ */
- export async function authenticateApiKey(request: Request) {
--  const h = request.headers.get("authorization") ?? "";
--  const m = /^Bearer\s+(hmo_[a-f0-9]{48})$/i.exec(h.trim());
--  if (!m) return null;
-+  const h = (request.headers.get("authorization") ?? "").trim();
-+  const m = /^Bearer\s+(hmo_[a-f0-9]{48})$/i.exec(h);
-   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-+  if (!m) {
-+    const jwt = /^Bearer\s+([\w-]+\.[\w-]+\.[\w-]+)$/.exec(h)?.[1];
-+    if (!jwt) return null;
-+    const { anonClient, isAllowedEmail } = await import("./extension-auth.server");
-+    const { data, error } = await anonClient().auth.getUser(jwt);
-+    if (error || !data.user || !isAllowedEmail(data.user.email)) return null;
-+    return { userId: data.user.id, db: supabaseAdmin };
-+  }
-   const hash = await sha256Hex(m[1]!.toLowerCase());
-   const { data } = await supabaseAdmin
-     .from("api_keys")
 diff --git a/src/lib/extension-auth.functions.ts b/src/lib/extension-auth.functions.ts
 new file mode 100644
 index 0000000..bbf4c1b
@@ -51,10 +19,10 @@ index 0000000..bbf4c1b
 +  });
 diff --git a/src/lib/extension-auth.server.ts b/src/lib/extension-auth.server.ts
 new file mode 100644
-index 0000000..30dd60e
+index 0000000..506320c
 --- /dev/null
 +++ b/src/lib/extension-auth.server.ts
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,103 @@
 +// Chrome extension sign-in support. Server-only.
 +//
 +// Flow (see /extension/connect):
@@ -62,13 +30,13 @@ index 0000000..30dd60e
 +//  2. The signed-in user approves; createExtensionGrant mints a single-use Supabase magic-link
 +//     token hash (no email is sent) and the page redirects to https://<extension-id>.chromiumapp.org/,
 +//     a URL only that extension can receive.
-+//  3. The extension exchanges the hash at POST /api/public/v1/extension/token for its OWN Supabase
-+//     session (separate refresh-token family from the web app), refreshes it there, and revokes it at
-+//     POST /api/public/v1/extension/signout.
-+// Access tokens are short-lived Supabase JWTs accepted by the /api/public/v1 endpoints (see apikeys.server.ts).
++//  3. The extension exchanges the hash at POST /api/public/v1/extension/token for a dedicated,
++//     non-expiring `hmo_` API key (shown and revocable in Settings → API keys), so it stays signed
++//     in until the user signs out or revokes it. POST /api/public/v1/extension/signout revokes it.
 +import { createClient } from "@supabase/supabase-js";
 +import type { Database } from "@/integrations/supabase/types";
 +import { ALLOWED_EMAILS } from "./hmo-core";
++import { newApiKey, sha256Hex } from "./apikeys.server";
 +
 +const REDIRECT_RE = /^https:\/\/([a-p]{32})\.chromiumapp\.org\/?$/;
 +
@@ -88,8 +56,7 @@ index 0000000..30dd60e
 +export const isAllowedEmail = (email: string | null | undefined) =>
 +  !!email && ALLOWED_EMAILS.includes(email.toLowerCase());
 +
-+/** A Supabase client with the publishable key and no persisted state (one per request). */
-+export function anonClient() {
++function anonClient() {
 +  const url = process.env["SUPABASE_URL"];
 +  const key = process.env["SUPABASE_PUBLISHABLE_KEY"];
 +  if (!url || !key) throw new Error("Supabase is not configured");
@@ -111,50 +78,53 @@ index 0000000..30dd60e
 +  return { tokenHash };
 +}
 +
-+type SessionLike = {
-+  access_token: string;
-+  refresh_token: string;
-+  expires_at?: number | undefined;
-+  expires_in?: number | undefined;
-+  user: { id: string; email?: string | undefined; user_metadata?: Record<string, unknown> | undefined };
-+};
-+
-+export function sessionPayload(s: SessionLike) {
-+  const meta = s.user.user_metadata ?? {};
++export function userPayload(user: { id: string; email?: string | undefined; user_metadata?: Record<string, unknown> | undefined }) {
++  const meta = user.user_metadata ?? {};
 +  return {
-+    access_token: s.access_token,
-+    refresh_token: s.refresh_token,
-+    expires_at: s.expires_at ?? Math.floor(Date.now() / 1000) + (s.expires_in ?? 3600),
-+    user: {
-+      id: s.user.id,
-+      email: s.user.email ?? null,
-+      name: (meta["full_name"] as string | undefined) ?? (meta["name"] as string | undefined) ?? null,
-+      avatar_url: (meta["avatar_url"] as string | undefined) ?? (meta["picture"] as string | undefined) ?? null,
-+    },
++    id: user.id,
++    email: user.email ?? null,
++    name: (meta["full_name"] as string | undefined) ?? (meta["name"] as string | undefined) ?? null,
++    avatar_url: (meta["avatar_url"] as string | undefined) ?? (meta["picture"] as string | undefined) ?? null,
 +  };
 +}
 +
-+export async function exchangeGrant(tokenHash: string) {
++export function extensionKeyName(now = new Date()) {
++  const d = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" }).format(now);
++  return `Chrome extension · ${d}`;
++}
++
++/** Single-use grant → dedicated API key for this Chrome profile. */
++export async function exchangeGrantForApiKey(tokenHash: string) {
 +  const sb = anonClient();
 +  let { data, error } = await sb.auth.verifyOtp({ token_hash: tokenHash, type: "magiclink" });
 +  if (error || !data.session) ({ data, error } = await sb.auth.verifyOtp({ token_hash: tokenHash, type: "email" }));
-+  if (error || !data.session) throw new Error("invalid_grant");
-+  if (!isAllowedEmail(data.session.user.email)) throw new Error("not_allowed");
-+  return sessionPayload(data.session);
-+}
-+
-+export async function refreshExtensionSession(refreshToken: string) {
-+  const sb = anonClient();
-+  const { data, error } = await sb.auth.refreshSession({ refresh_token: refreshToken });
-+  if (error || !data.session) throw new Error("invalid_grant");
-+  if (!isAllowedEmail(data.session.user.email)) throw new Error("not_allowed");
-+  return sessionPayload(data.session);
-+}
-+
-+/** Revokes only the session that owns this access token (the web app stays signed in). */
-+export async function revokeExtensionSession(accessToken: string) {
++  if (error || !data.session || !data.user) throw new Error("invalid_grant");
 +  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-+  await supabaseAdmin.auth.admin.signOut(accessToken, "local");
++  // The temporary session was only needed to prove the grant; end it straight away.
++  await supabaseAdmin.auth.admin.signOut(data.session.access_token, "local").catch(() => undefined);
++  if (!isAllowedEmail(data.user.email)) throw new Error("not_allowed");
++  const key = newApiKey();
++  const { error: insErr } = await supabaseAdmin.from("api_keys").insert({
++    user_id: data.user.id,
++    name: extensionKeyName(),
++    key_prefix: key.slice(0, 10),
++    key_hash: await sha256Hex(key),
++  });
++  if (insErr) throw new Error("could_not_create_key");
++  return { api_key: key, user: userPayload(data.user) };
++}
++
++/** Revokes the extension's own API key (from the Authorization header). */
++export async function revokeExtensionKey(request: Request) {
++  const m = /^Bearer\s+(hmo_[a-f0-9]{48})$/i.exec((request.headers.get("authorization") ?? "").trim());
++  if (!m) return false;
++  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
++  const { error } = await supabaseAdmin
++    .from("api_keys")
++    .update({ revoked_at: new Date().toISOString() })
++    .eq("key_hash", await sha256Hex(m[1]!.toLowerCase()))
++    .is("revoked_at", null);
++  return !error;
 +}
 diff --git a/src/routeTree.gen.ts b/src/routeTree.gen.ts
 index ad2f250..a05d591 100644
@@ -423,22 +393,20 @@ index ad2f250..a05d591 100644
    ._addFileChildren(rootRouteChildren)
 diff --git a/src/routes/api/public/v1/extension.signout.ts b/src/routes/api/public/v1/extension.signout.ts
 new file mode 100644
-index 0000000..9ed4dee
+index 0000000..8f9c96b
 --- /dev/null
 +++ b/src/routes/api/public/v1/extension.signout.ts
-@@ -0,0 +1,17 @@
+@@ -0,0 +1,15 @@
 +import { createFileRoute } from "@tanstack/react-router";
-+import { revokeExtensionSession } from "@/lib/extension-auth.server";
++import { revokeExtensionKey } from "@/lib/extension-auth.server";
 +import { json } from "@/lib/api-http.server";
 +
-+// POST /api/public/v1/extension/signout — revokes the extension's own session (Bearer access token).
++// POST /api/public/v1/extension/signout — revokes the extension's own API key (Bearer hmo_…).
 +export const Route = createFileRoute("/api/public/v1/extension/signout")({
 +  server: {
 +    handlers: {
 +      POST: async ({ request }) => {
-+        const m = /^Bearer\s+(\S+)$/i.exec((request.headers.get("authorization") ?? "").trim());
-+        if (!m || m[1]!.split(".").length !== 3) return json({ error: "unauthorised" }, 401);
-+        await revokeExtensionSession(m[1]!).catch(() => {});
++        if (!(await revokeExtensionKey(request))) return json({ error: "unauthorised" }, 401);
 +        return json({ ok: true });
 +      },
 +    },
@@ -446,39 +414,34 @@ index 0000000..9ed4dee
 +});
 diff --git a/src/routes/api/public/v1/extension.token.ts b/src/routes/api/public/v1/extension.token.ts
 new file mode 100644
-index 0000000..7ae6646
+index 0000000..312c2cd
 --- /dev/null
 +++ b/src/routes/api/public/v1/extension.token.ts
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,29 @@
 +import { createFileRoute } from "@tanstack/react-router";
 +import { z } from "zod";
-+import { exchangeGrant, refreshExtensionSession } from "@/lib/extension-auth.server";
++import { exchangeGrantForApiKey } from "@/lib/extension-auth.server";
 +import { json } from "@/lib/api-http.server";
 +
-+// POST /api/public/v1/extension/token — Chrome extension session exchange and refresh.
-+//   { "grant_type": "token_hash", "token_hash": "…" }       → new session
-+//   { "grant_type": "refresh_token", "refresh_token": "…" } → rotated session
-+// Response: { access_token, refresh_token, expires_at, user: { id, email, name, avatar_url } }
++// POST /api/public/v1/extension/token — Chrome extension sign-in.
++//   { "grant_type": "token_hash", "token_hash": "…" }
++// → 200 { api_key: "hmo_…", user: { id, email, name, avatar_url } }
++// The key doesn't expire; it is listed (and revocable) in Settings → API keys.
 +export const Route = createFileRoute("/api/public/v1/extension/token")({
 +  server: {
 +    handlers: {
 +      POST: async ({ request }) => {
 +        const parsed = z
-+          .discriminatedUnion("grant_type", [
-+            z.object({ grant_type: z.literal("token_hash"), token_hash: z.string().min(10).max(200) }),
-+            z.object({ grant_type: z.literal("refresh_token"), refresh_token: z.string().min(6).max(500) }),
-+          ])
++          .object({ grant_type: z.literal("token_hash"), token_hash: z.string().min(10).max(200) })
 +          .safeParse(await request.json().catch(() => null));
 +        if (!parsed.success) return json({ error: "invalid_request" }, 400);
 +        try {
-+          const s =
-+            parsed.data.grant_type === "token_hash"
-+              ? await exchangeGrant(parsed.data.token_hash)
-+              : await refreshExtensionSession(parsed.data.refresh_token);
-+          return json(s);
++          return json(await exchangeGrantForApiKey(parsed.data.token_hash));
 +        } catch (e) {
-+          const code = e instanceof Error && e.message === "not_allowed" ? "not_allowed" : "invalid_grant";
-+          return json({ error: code }, code === "not_allowed" ? 403 : 401);
++          const msg = e instanceof Error ? e.message : "";
++          if (msg === "not_allowed") return json({ error: "not_allowed" }, 403);
++          if (msg === "could_not_create_key") return json({ error: "could_not_create_key" }, 500);
++          return json({ error: "invalid_grant" }, 401);
 +        }
 +      },
 +    },
@@ -677,12 +640,12 @@ index d91eddf..5d64537 100644
            await supabase.auth.signOut();
 diff --git a/src/test/extension-auth.test.ts b/src/test/extension-auth.test.ts
 new file mode 100644
-index 0000000..d85416e
+index 0000000..4c92279
 --- /dev/null
 +++ b/src/test/extension-auth.test.ts
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,37 @@
 +import { afterEach, describe, expect, it } from "vitest";
-+import { extensionIdFromRedirect, isAllowedEmail, sessionPayload } from "@/lib/extension-auth.server";
++import { extensionIdFromRedirect, extensionKeyName, isAllowedEmail, userPayload } from "@/lib/extension-auth.server";
 +
 +describe("Chrome extension auth", () => {
 +  afterEach(() => {
@@ -708,9 +671,13 @@ index 0000000..d85416e
 +    expect(isAllowedEmail(null)).toBe(false);
 +  });
 +
-+  it("returns only the fields the extension needs", () => {
-+    const p = sessionPayload({ access_token: "a", refresh_token: "r", expires_in: 3600, user: { id: "u", email: "e@x", user_metadata: { full_name: "G H", picture: "p" } } });
-+    expect(p.user).toEqual({ id: "u", email: "e@x", name: "G H", avatar_url: "p" });
-+    expect(p.expires_at).toBeGreaterThan(Date.now() / 1000);
++  it("names keys so they're recognisable in Settings → API keys", () => {
++    const n = extensionKeyName(new Date(2026, 10, 20));
++    expect(n).toBe("Chrome extension · 20 Nov 2026");
++    expect(n.length).toBeLessThanOrEqual(60);
++  });
++
++  it("returns only the user fields the extension needs", () => {
++    expect(userPayload({ id: "u", email: "e@x", user_metadata: { full_name: "G H", picture: "p" } })).toEqual({ id: "u", email: "e@x", name: "G H", avatar_url: "p" });
 +  });
 +});

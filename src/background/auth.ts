@@ -1,8 +1,13 @@
 // Google sign-in via the Hear Me Out web app (which owns Google OAuth and the account allow-list).
 //   chrome.identity.launchWebAuthFlow → /extension/connect → https://<id>.chromiumapp.org/#token_hash=…
-//   POST /api/public/v1/extension/token exchanges it for this profile's own short-lived session.
-// Sessions live in IndexedDB of the extension origin: per Chrome profile, never synced, never visible
-// to web pages or content scripts, and removed on sign-out.
+//   POST /api/public/v1/extension/token exchanges it for a dedicated `hmo_` API key for this profile.
+//
+// Staying signed in: the key never expires and needs no refresh, so there is nothing to time out.
+// Only two things end the connection: Sign out here, or revoking the key in Hear Me Out → Settings →
+// API keys. Network failures and server errors never sign you out.
+//
+// The key lives in IndexedDB of the extension origin (per Chrome profile, never synced, not visible to
+// web pages or content scripts; `unlimitedStorage` stops Chrome evicting it) and is removed on sign-out.
 import { HMO_ORIGIN } from "../shared/config";
 import { getAuthSession, setAuthSession } from "../shared/db";
 import type { AuthSession, AuthSummary, AuthUser } from "../shared/types";
@@ -17,7 +22,7 @@ export class AuthError extends Error {
   }
 }
 
-const LAST_USER_KEY = "lastUser";
+const REJECTED_KEY = "authRejected";
 
 export function randomState(): string {
   return [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -36,27 +41,27 @@ export function parseCallback(responseUrl: string, expectedState: string): { tok
   return { tokenHash };
 }
 
-async function tokenRequest(body: Record<string, string>): Promise<AuthSession> {
+async function exchange(tokenHash: string): Promise<AuthSession> {
   let r: Response;
   try {
     r = await fetch(`${HMO_ORIGIN}/api/public/v1/extension/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ grant_type: "token_hash", token_hash: tokenHash }),
     });
   } catch {
     throw new AuthError("failed", "Couldn't reach Hear Me Out. Check your connection.");
   }
-  const j = (await r.json().catch(() => ({}))) as Partial<AuthSession> & { error?: string };
+  const j = (await r.json().catch(() => ({}))) as { api_key?: string; user?: AuthUser; error?: string };
   if (r.status === 403 || j.error === "not_allowed") throw new AuthError("not-allowed", "That Google account isn't authorised for Hear Me Out.");
-  if (r.status === 401 || r.status === 400) throw new AuthError("expired", "Your Hear Me Out session has expired. Please reconnect.");
-  if (!r.ok || !j.access_token || !j.refresh_token || !j.user) throw new AuthError("failed", `Sign-in failed (${r.status}).`);
-  return j as AuthSession;
+  if (r.status === 401) throw new AuthError("failed", "That sign-in link has expired. Please try again.");
+  if (!r.ok || !j.api_key || !/^hmo_[a-f0-9]{48}$/.test(j.api_key) || !j.user) throw new AuthError("failed", `Sign-in failed (${r.status}).`);
+  return { api_key: j.api_key, user: j.user, created_at: Date.now() };
 }
 
-async function store(s: AuthSession) {
-  await setAuthSession(s);
-  await chrome.storage.local.set({ [LAST_USER_KEY]: s.user });
+/** Best-effort revocation of a key on the server. */
+async function revoke(apiKey: string) {
+  await fetch(`${HMO_ORIGIN}/api/public/v1/extension/signout`, { method: "POST", headers: { Authorization: `Bearer ${apiKey}` } }).catch(() => undefined);
 }
 
 export async function signIn(): Promise<AuthUser> {
@@ -73,56 +78,43 @@ export async function signIn(): Promise<AuthUser> {
   }
   if (!responseUrl) throw new AuthError("cancelled", "Sign-in was cancelled.");
   const { tokenHash } = parseCallback(responseUrl, state);
-  const s = await tokenRequest({ grant_type: "token_hash", token_hash: tokenHash });
-  await store(s);
-  return s.user;
+  const next = await exchange(tokenHash);
+  const previous = await getAuthSession();
+  await setAuthSession(next);
+  await chrome.storage.local.remove(REJECTED_KEY);
+  // Reconnecting replaces this profile's key: retire the old one so keys don't pile up.
+  if (previous?.api_key && previous.api_key !== next.api_key) void revoke(previous.api_key);
+  return next.user;
 }
 
-let refreshing: Promise<AuthSession> | null = null;
-
-/** Returns a valid access token, refreshing (single-flight) when it is close to expiry. */
-export async function getAccessToken(force = false): Promise<string> {
+/** The credential for API calls. No expiry, no refresh. */
+export async function getApiKey(): Promise<string> {
   const s = await getAuthSession();
-  if (!s) throw new AuthError("signed-out", "Sign in with Google to save voice notes.");
-  if (!force && s.expires_at - 90 > Date.now() / 1000) return s.access_token;
-  refreshing ??= (async () => {
-    try {
-      const next = await tokenRequest({ grant_type: "refresh_token", refresh_token: s.refresh_token });
-      await store(next);
-      return next;
-    } catch (e) {
-      if (e instanceof AuthError && (e.code === "expired" || e.code === "not-allowed")) {
-        await setAuthSession(null);
-        await chrome.storage.local.set({ authExpired: true });
-      }
-      throw e;
-    } finally {
-      refreshing = null;
-    }
-  })();
-  return (await refreshing).access_token;
+  if (!s?.api_key) throw new AuthError("signed-out", "Sign in with Google to save voice notes.");
+  return s.api_key;
+}
+
+/** Called when Hear Me Out answers 401. The key is kept (in case it was a blip); the UI offers Reconnect. */
+export async function markRejected() {
+  await chrome.storage.local.set({ [REJECTED_KEY]: true });
+}
+
+export async function markAccepted() {
+  const r = await chrome.storage.local.get(REJECTED_KEY);
+  if (r[REJECTED_KEY]) await chrome.storage.local.remove(REJECTED_KEY);
 }
 
 export async function authSummary(): Promise<AuthSummary> {
   const s = await getAuthSession();
-  if (s) return { signedIn: true, user: s.user };
-  const r = await chrome.storage.local.get([LAST_USER_KEY, "authExpired"]);
-  return { signedIn: false, expired: !!r["authExpired"], user: (r[LAST_USER_KEY] as AuthUser | undefined) ?? undefined };
+  if (!s?.api_key) return { signedIn: false };
+  const r = await chrome.storage.local.get(REJECTED_KEY);
+  return { signedIn: true, expired: !!r[REJECTED_KEY], user: s.user };
 }
 
-/** Revokes this extension session server-side (best effort) and removes every credential locally. */
+/** Revokes this profile's key server-side (best effort) and removes it locally. */
 export async function signOut(): Promise<void> {
   const s = await getAuthSession();
-  if (s) {
-    await fetch(`${HMO_ORIGIN}/api/public/v1/extension/signout`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${s.access_token}` },
-    }).catch(() => undefined);
-  }
+  if (s?.api_key) await revoke(s.api_key);
   await setAuthSession(null);
-  await chrome.storage.local.remove([LAST_USER_KEY, "authExpired"]);
-}
-
-export async function onSignedIn() {
-  await chrome.storage.local.remove("authExpired");
+  await chrome.storage.local.remove(REJECTED_KEY);
 }

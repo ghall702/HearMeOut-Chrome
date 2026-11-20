@@ -29,6 +29,12 @@ export function useAuth() {
   const refresh = useCallback(() => bg<AuthSummary>({ type: "auth:get" }).then(setAuth).catch(() => setAuth({ signedIn: false })), []);
   useEffect(() => {
     void refresh();
+    // React immediately if Hear Me Out rejects (or re-accepts) this profile's key.
+    const l = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
+      if (area === "local" && changes["authRejected"]) void refresh();
+    };
+    chrome.storage.onChanged.addListener(l);
+    return () => chrome.storage.onChanged.removeListener(l);
   }, [refresh]);
   return { auth, setAuth, refresh };
 }

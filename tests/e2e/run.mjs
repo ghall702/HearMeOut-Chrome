@@ -23,8 +23,8 @@ function assert(cond, msg) {
 }
 const near = (a, b, tol) => Math.abs(a - b) <= tol;
 
-async function launch(extDir, label) {
-  const dir = mkdtempSync(path.join(tmpdir(), `hmo-${label}-`));
+async function launch(extDir, label, reuseDir) {
+  const dir = reuseDir ?? mkdtempSync(path.join(tmpdir(), `hmo-${label}-`));
   const ctx = await chromium.launchPersistentContext(dir, {
     headless: false,
     viewport: { width: 1100, height: 760 },
@@ -34,7 +34,7 @@ async function launch(extDir, label) {
   sw ??= await ctx.waitForEvent("serviceworker");
   const id = new URL(sw.url()).host;
   await ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:8787" });
-  return { ctx, id, base: `chrome-extension://${id}` };
+  return { ctx, id, base: `chrome-extension://${id}`, dir };
 }
 
 /** A fresh, short-lived "popup" (the popup document opened as a tab). Closing it = popup closing. */
@@ -162,7 +162,7 @@ const scenarios = {
     const auth = await send(p, { type: "auth:get" });
     assert(auth.ok && auth.data.signedIn && auth.data.user.email === "ghall702@gmail.com", "signed in as the profile's account");
     const stored = await p.evaluate(async () => JSON.stringify(await chrome.storage.local.get(null)));
-    assert(!/access_token|refresh_token/.test(stored), "no credentials in chrome.storage.local");
+    assert(!/hmo_/.test(stored), "no credentials in chrome.storage.local");
     await p.close();
     return "session stored in extension IndexedDB only";
   },
@@ -391,6 +391,42 @@ async function gmailInsertionSafety(env) {
   return "no editor → no-op; selection preserved; ambiguous → refused; only the focused editor changes";
 }
 
+/** Sign in once, fully quit Chrome, relaunch the same profile: still signed in, no new sign-in. */
+async function staysSignedIn(extDir, mock) {
+  let env = await launch(extDir, "persist");
+  const dir = env.dir;
+  try {
+    await signIn(env, mock);
+    const exchanges = mock.state.tokenExchanges;
+    await env.ctx.close(); // quit Chrome completely
+    env = await launch(extDir, "persist", dir); // reopen the same profile
+    const p = await openPopup(env);
+    await p.getByRole("tab", { name: /Library/ }).click();
+    await p.locator(".item, .empty").first().waitFor({ timeout: 10000 });
+    const auth = await send(p, { type: "auth:get" });
+    assert(auth.data.signedIn && !auth.data.expired, "still signed in after a full browser restart");
+    assert(mock.state.tokenExchanges === exchanges, "no new sign-in was needed");
+    assert((await p.locator("text=Sign in with Google").count()) === 0, "no sign-in prompt shown");
+
+    // Revoking the key in Hear Me Out → Settings → API keys: offered Reconnect, never silently logged out.
+    const key = [...mock.state.keys].at(-1);
+    mock.state.revoked.add(key);
+    await p.getByRole("button", { name: "Refresh" }).click();
+    await p.getByRole("button", { name: /Reconnect with Google/ }).waitFor({ timeout: 10000 });
+    const after = await send(p, { type: "auth:get" });
+    assert(after.data.signedIn && after.data.expired, "revocation shows Reconnect rather than signing out");
+    await p.getByRole("button", { name: /Reconnect with Google/ }).first().click();
+    await p.getByRole("button", { name: /Reconnect with Google/ }).waitFor({ state: "detached", timeout: 15000 });
+    await p.locator(".item, .empty:not(:has(.spin))").first().waitFor({ timeout: 10000 }); // library reloads by itself
+    const fixed = await send(p, { type: "auth:get" });
+    assert(fixed.data.signedIn && !fixed.data.expired, "Reconnect restores access");
+    await p.close();
+    return "survives a full Chrome restart with no re-sign-in; a revoked key prompts Reconnect, which fixes it";
+  } finally {
+    await env.ctx.close();
+  }
+}
+
 async function profileIsolation(extDir, mock) {
   const a = await launch(extDir, "profile-a");
   const b = await launch(extDir, "profile-b");
@@ -453,7 +489,7 @@ execSync("npx vite build", { cwd: ROOT, stdio: "ignore" }); // production build 
 let env;
 try {
   env = await launch(extDir, "main");
-  const all = [...Object.entries(scenarios), ["Insert into Gmail is safe", () => gmailInsertionSafety(env)], ["two Chrome profiles stay independent", () => profileIsolation(extDir, mock)], ["15-minute limit (shortened build) with popup closed", () => limitScenario(mock)]];
+  const all = [...Object.entries(scenarios), ["Insert into Gmail is safe", () => gmailInsertionSafety(env)], ["stays signed in across Chrome restarts (no expiry)", () => staysSignedIn(extDir, mock)], ["two Chrome profiles stay independent", () => profileIsolation(extDir, mock)], ["15-minute limit (shortened build) with popup closed", () => limitScenario(mock)]];
   for (const [name, fn] of all) {
     if (ONLY && !ONLY.some((o) => name.includes(o))) continue;
     const t = Date.now();

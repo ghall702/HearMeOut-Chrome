@@ -84,15 +84,20 @@ export interface AuthUser {
   avatar_url: string | null;
 }
 
+/**
+ * This profile's connection to Hear Me Out: a dedicated, non-expiring `hmo_` API key issued after
+ * Google sign-in. It never needs refreshing, so the extension stays signed in until you sign out
+ * here or revoke the key in Hear Me Out → Settings → API keys.
+ */
 export interface AuthSession {
-  access_token: string;
-  refresh_token: string;
-  expires_at: number;
+  api_key: string;
   user: AuthUser;
+  created_at: number;
 }
 
 export interface AuthSummary {
   signedIn: boolean;
+  /** Hear Me Out rejected the stored key (e.g. revoked). The key is kept until you reconnect. */
   expired?: boolean;
   user?: AuthUser;
 }

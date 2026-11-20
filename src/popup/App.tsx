@@ -74,7 +74,7 @@ export function App() {
         )}
       </header>
       {showSignIn ? (
-        <SignIn auth={auth} busy={signingIn} error={authError} onSignIn={signIn} />
+        <SignIn busy={signingIn} error={authError} onSignIn={signIn} />
       ) : (
         <>
           <div className="nav" role="tablist" aria-label="Hear Me Out" onKeyDown={onTabKey}>
@@ -86,9 +86,17 @@ export function App() {
           </div>
           <main className="main" key={view}>
             {authError && <Notice kind="error">{authError}</Notice>}
+            {auth.signedIn && auth.expired && (
+              <Notice kind="warn">
+                Hear Me Out didn't accept this profile's connection — it may have been revoked.{" "}
+                <button type="button" className="btn btn-soft" style={{ height: 28, marginTop: 6 }} onClick={signIn} disabled={signingIn}>
+                  <GoogleG /> Reconnect with Google
+                </button>
+              </Notice>
+            )}
             {view === "record" && <RecordView state={state as RecState} auth={auth} ctx={ctx} tab={tab} onToast={show} onSignIn={signIn} />}
             {view === "library" &&
-              (auth.signedIn ? <LibraryView auth={auth} ctx={ctx} onToast={show} /> : <SignIn auth={auth} busy={signingIn} error={null} onSignIn={signIn} compact />)}
+              (auth.signedIn ? <LibraryView auth={auth} ctx={ctx} onToast={show} /> : <SignIn busy={signingIn} error={null} onSignIn={signIn} compact />)}
             {view === "settings" && <SettingsView auth={auth} settings={settings} onSignOut={signOut} onToast={show} />}
           </main>
         </>
@@ -98,7 +106,7 @@ export function App() {
   );
 }
 
-function SignIn({ auth, busy, error, onSignIn, compact }: { auth: AuthSummary; busy: boolean; error: string | null; onSignIn: () => void; compact?: boolean }) {
+function SignIn({ busy, error, onSignIn, compact }: { busy: boolean; error: string | null; onSignIn: () => void; compact?: boolean }) {
   return (
     <main className="main" style={{ justifyContent: compact ? "flex-start" : "center", gap: 16, padding: compact ? undefined : "24px 22px" }}>
       {!compact && (
@@ -112,9 +120,6 @@ function SignIn({ auth, busy, error, onSignIn, compact }: { auth: AuthSummary; b
           <p className="muted" style={{ margin: 0 }}>Record a voice note from any tab and get the right sharing format for the site you're on.</p>
         </div>
       )}
-      {auth.expired && auth.user?.email && (
-        <Notice kind="warn">Your session for <strong>{auth.user.email}</strong> has expired. Reconnect to carry on.</Notice>
-      )}
       {error && <Notice kind="error">{error}</Notice>}
       <button
         type="button"
@@ -124,12 +129,12 @@ function SignIn({ auth, busy, error, onSignIn, compact }: { auth: AuthSummary; b
         disabled={busy}
         autoFocus
       >
-        {busy ? <Loader2 className="spin" /> : <GoogleG />} {auth.expired ? "Reconnect with Google" : "Sign in with Google"}
+        {busy ? <Loader2 className="spin" /> : <GoogleG />} Sign in with Google
       </button>
       <div className="row small muted" style={{ justifyContent: "center" }}>
         <ShieldCheck size={14} /> Private service — authorised accounts only.
       </div>
-      <p className="small muted center" style={{ margin: 0 }}>Each Chrome profile signs in separately, so your personal, work and teaching profiles stay apart.</p>
+      <p className="small muted center" style={{ margin: 0 }}>You sign in once per Chrome profile and stay signed in. Each profile keeps its own account.</p>
     </main>
   );
 }

@@ -44,8 +44,8 @@ describe("IndexedDB recording storage", () => {
   });
 
   it("stores and clears the auth session", async () => {
-    await setAuthSession({ access_token: "a.b.c", refresh_token: "r", expires_at: 1, user: { id: "u", email: "e", name: null, avatar_url: null } });
-    expect((await getAuthSession())?.refresh_token).toBe("r");
+    await setAuthSession({ api_key: "hmo_" + "a".repeat(48), created_at: 1, user: { id: "u", email: "e", name: null, avatar_url: null } });
+    expect((await getAuthSession())?.api_key).toBe("hmo_" + "a".repeat(48));
     await setAuthSession(null);
     expect(await getAuthSession()).toBeNull();
   });
