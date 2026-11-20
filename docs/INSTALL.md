@@ -3,8 +3,16 @@
 Step-by-step instructions for **Windows 11**, **macOS** and **Chromebooks**. It takes about five
 minutes per computer, and you only do it once.
 
-You don't need to install anything else: no Node.js and no developer tools. You download one zip
-file, unzip it, and point Chrome at the folder.
+> **Best option once it's on the Chrome Web Store:** open your Hear Me Out store link and click
+> **Add to Chrome**, then go to [Step 4](#step-4-sign-in-with-google-once-per-profile). There are no
+> files, no Developer mode, it updates itself, and it works on most work computers. To publish it
+> (unlisted, so only people with the link can find it), see [`store/README.md`](../store/README.md).
+>
+> The zip method below works today, but it needs Chrome's **Developer mode**, which some work
+> computers and school Chromebooks block. It also doesn't update itself.
+
+Either way, you don't install any software on the computer: no Node.js, no developer tools, nothing
+beyond Chrome itself.
 
 > **Before you start (one time only):** make sure the Hear Me Out website has the extension
 > sign-in update. In Lovable, click **Publish → Update** if you haven't since applying the change.

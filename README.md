@@ -17,6 +17,13 @@ Me Out service (`https://hearmeout.george-hall.uk`) and the media server
 
 ## Quick start: install without building anything
 
+**Recommended:** publish it to the Chrome Web Store as **Unlisted** (once, about 30 minutes, with
+copy-paste answers in [`store/README.md`](store/README.md)). After that, every computer is just
+*open link → Add to Chrome*. There's no Developer mode, it updates itself, and it works on most
+work machines.
+
+**Available now, as the fallback:**
+
 **→ [Step-by-step install guide for Windows 11, macOS and Chromebook, with screenshots](docs/INSTALL.md)**
 
 In short:
@@ -325,7 +332,7 @@ docs/           manual test plan
 npm run package
 ```
 
-This produces `release/hearmeout-chrome-<version>.zip` **without** the manifest `key`, because the
+This produces `store/hearmeout-chrome-<version>.zip` **without** the manifest `key`, because the
 store assigns its own ID. Nothing is uploaded. Publishing is your decision. If you publish, add the
 store's extension ID to `HMO_EXTENSION_IDS`. The store listing will need a privacy policy that
 reflects the [Permissions, privacy and security](#permissions-privacy-and-security) section.

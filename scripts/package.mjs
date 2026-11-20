@@ -1,5 +1,5 @@
 // Two packages:
-//   npm run package           → release/hearmeout-chrome-<version>.zip for a possible Chrome Web Store
+//   npm run package           → store/hearmeout-chrome-<version>.zip for a possible Chrome Web Store
 //                               upload (no manifest `key`; the store assigns its own ID). Nothing is
 //                               uploaded or published — that stays a manual decision.
 //   npm run package:download  → download/HearMeOut-for-Chrome.zip, the ready-to-install build for
@@ -54,7 +54,7 @@ const cd = Buffer.concat(central);
 const end = Buffer.alloc(22);
 end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10);
 end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(offset, 16);
-const outDir = path.join(root, forDownload ? "download" : "release");
+const outDir = path.join(root, forDownload ? "download" : "store");
 mkdirSync(outDir, { recursive: true });
 const out = path.join(outDir, forDownload ? "HearMeOut-for-Chrome.zip" : `hearmeout-chrome-${version}.zip`);
 writeFileSync(out, Buffer.concat([...local, cd, end]));
