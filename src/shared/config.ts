@@ -5,7 +5,7 @@ export const MEDIA_ORIGIN: string =
   (import.meta.env.VITE_MEDIA_ORIGIN as string | undefined) ?? "https://mediahub-lm-1.georgehalltuition.com";
 
 /** Hard limit enforced inside the recording engine (offscreen document). */
-export const MAX_RECORDING_SECONDS = 15 * 60;
+export const MAX_RECORDING_SECONDS: number = Number(import.meta.env.VITE_MAX_SECONDS as string | undefined) || 15 * 60;
 export const MAX_RECORDING_MS = MAX_RECORDING_SECONDS * 1000;
 /** MediaRecorder timeslice: each second of audio is persisted to IndexedDB as it is produced. */
 export const CHUNK_MS = 1000;

@@ -44,7 +44,7 @@ async function handle(msg: OffRequest): Promise<unknown> {
     case "off:stop":
       return recorder.stop(msg.reason);
     case "off:status":
-      return { recording: recorder.active, paused: recorder.paused, draftId: recorder.draftId, uploading: uploading > 0 } satisfies OffStatus;
+      return { recording: recorder.busy, paused: recorder.paused, draftId: recorder.draftId, uploading: uploading > 0 } satisfies OffStatus;
     case "off:upload": {
       uploading++;
       const { draftId, url, headers } = msg;

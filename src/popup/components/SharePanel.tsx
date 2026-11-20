@@ -8,6 +8,11 @@ import { insertGmailCard } from "../insert";
 
 const ICONS: Record<ShareFormat, typeof Mail> = { "email-card": Mail, embed: Code2, link: Link2, message: MessageSquareText };
 
+export function gridLabel(format: ShareFormat, ctx: SiteContext) {
+  if (format === "email-card") return ctx.name === "Outlook" ? "Outlook card" : "Gmail card";
+  return FORMAT_LABELS[format].short;
+}
+
 export function actionLabel(format: ShareFormat, ctx: SiteContext) {
   if (format === "email-card" && ctx.name === "Outlook") return "Copy for Outlook";
   return FORMAT_LABELS[format].action;
@@ -32,12 +37,10 @@ export function ShareOptions({
   item,
   ctx,
   onToast,
-  compact = false,
 }: {
   item: Shareable & { id: string };
   ctx: SiteContext;
   onToast: (t: string, k?: "ok" | "error") => void;
-  compact?: boolean;
 }) {
   const { copied, copy } = useCopy(onToast);
   const formats: ShareFormat[] = ["email-card", "embed", "link", "message"];
@@ -54,7 +57,7 @@ export function ShareOptions({
             onClick={() => copy(f, item)}
             title={rec ? "Recommended for this website" : undefined}
           >
-            <Icon /> {compact ? FORMAT_LABELS[f].short : actionLabel(f, ctx).replace(/^Copy /, "")}
+            <Icon /> {gridLabel(f, ctx)}
           </button>
         );
       })}

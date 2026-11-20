@@ -1,0 +1,716 @@
+diff --git a/src/lib/apikeys.server.ts b/src/lib/apikeys.server.ts
+index 2060809..518f62f 100644
+--- a/src/lib/apikeys.server.ts
++++ b/src/lib/apikeys.server.ts
+@@ -8,12 +8,23 @@ export function newApiKey() {
+   return "hmo_" + [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+ }
+ 
+-/** Resolves an `Authorization: Bearer hmo_…` header to a user id, or null. */
++/**
++ * Resolves the Authorization header to a user id, or null. Accepts either
++ *  - `Bearer hmo_…` API keys (Mac app, scripts), or
++ *  - `Bearer <Supabase access token>` short-lived sessions (Chrome extension, see extension-auth.server.ts).
++ */
+ export async function authenticateApiKey(request: Request) {
+-  const h = request.headers.get("authorization") ?? "";
+-  const m = /^Bearer\s+(hmo_[a-f0-9]{48})$/i.exec(h.trim());
+-  if (!m) return null;
++  const h = (request.headers.get("authorization") ?? "").trim();
++  const m = /^Bearer\s+(hmo_[a-f0-9]{48})$/i.exec(h);
+   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
++  if (!m) {
++    const jwt = /^Bearer\s+([\w-]+\.[\w-]+\.[\w-]+)$/.exec(h)?.[1];
++    if (!jwt) return null;
++    const { anonClient, isAllowedEmail } = await import("./extension-auth.server");
++    const { data, error } = await anonClient().auth.getUser(jwt);
++    if (error || !data.user || !isAllowedEmail(data.user.email)) return null;
++    return { userId: data.user.id, db: supabaseAdmin };
++  }
+   const hash = await sha256Hex(m[1]!.toLowerCase());
+   const { data } = await supabaseAdmin
+     .from("api_keys")
+diff --git a/src/lib/extension-auth.functions.ts b/src/lib/extension-auth.functions.ts
+new file mode 100644
+index 0000000..bbf4c1b
+--- /dev/null
++++ b/src/lib/extension-auth.functions.ts
+@@ -0,0 +1,13 @@
++import { createServerFn } from "@tanstack/react-start";
++import { z } from "zod";
++import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
++import { extensionIdFromRedirect, mintExtensionGrant } from "./extension-auth.server";
++
++/** Called by /extension/connect after the signed-in user approves the Chrome extension. */
++export const createExtensionGrant = createServerFn({ method: "POST" })
++  .middleware([requireSupabaseAuth])
++  .inputValidator((d) => z.object({ redirectUri: z.string().url().max(200) }).parse(d))
++  .handler(async ({ data, context }) => {
++    if (!extensionIdFromRedirect(data.redirectUri)) throw new Error("This extension isn't allowed to connect.");
++    return mintExtensionGrant(context.userId);
++  });
+diff --git a/src/lib/extension-auth.server.ts b/src/lib/extension-auth.server.ts
+new file mode 100644
+index 0000000..30dd60e
+--- /dev/null
++++ b/src/lib/extension-auth.server.ts
+@@ -0,0 +1,101 @@
++// Chrome extension sign-in support. Server-only.
++//
++// Flow (see /extension/connect):
++//  1. The extension opens /extension/connect with chrome.identity.launchWebAuthFlow.
++//  2. The signed-in user approves; createExtensionGrant mints a single-use Supabase magic-link
++//     token hash (no email is sent) and the page redirects to https://<extension-id>.chromiumapp.org/,
++//     a URL only that extension can receive.
++//  3. The extension exchanges the hash at POST /api/public/v1/extension/token for its OWN Supabase
++//     session (separate refresh-token family from the web app), refreshes it there, and revokes it at
++//     POST /api/public/v1/extension/signout.
++// Access tokens are short-lived Supabase JWTs accepted by the /api/public/v1 endpoints (see apikeys.server.ts).
++import { createClient } from "@supabase/supabase-js";
++import type { Database } from "@/integrations/supabase/types";
++import { ALLOWED_EMAILS } from "./hmo-core";
++
++const REDIRECT_RE = /^https:\/\/([a-p]{32})\.chromiumapp\.org\/?$/;
++
++/** Returns the extension id if redirectUri is a valid chromiumapp.org callback for an allowed extension. */
++export function extensionIdFromRedirect(redirectUri: string): string | null {
++  const m = REDIRECT_RE.exec(redirectUri);
++  if (!m) return null;
++  const id = m[1]!;
++  const allowed = (process.env["HMO_EXTENSION_IDS"] ?? "")
++    .split(",")
++    .map((s) => s.trim())
++    .filter(Boolean);
++  if (allowed.length && !allowed.includes(id)) return null;
++  return id;
++}
++
++export const isAllowedEmail = (email: string | null | undefined) =>
++  !!email && ALLOWED_EMAILS.includes(email.toLowerCase());
++
++/** A Supabase client with the publishable key and no persisted state (one per request). */
++export function anonClient() {
++  const url = process.env["SUPABASE_URL"];
++  const key = process.env["SUPABASE_PUBLISHABLE_KEY"];
++  if (!url || !key) throw new Error("Supabase is not configured");
++  return createClient<Database>(url, key, {
++    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, storage: undefined },
++  });
++}
++
++/** Mint a single-use token hash for the given user. Does not send an email. */
++export async function mintExtensionGrant(userId: string) {
++  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
++  const { data: u, error: ue } = await supabaseAdmin.auth.admin.getUserById(userId);
++  const email = u?.user?.email;
++  if (ue || !email) throw new Error("Account not found");
++  if (!isAllowedEmail(email)) throw new Error("That Google account isn't authorised for Hear Me Out.");
++  const { data, error } = await supabaseAdmin.auth.admin.generateLink({ type: "magiclink", email });
++  const tokenHash = data?.properties?.hashed_token;
++  if (error || !tokenHash) throw new Error("Could not create an extension sign-in grant");
++  return { tokenHash };
++}
++
++type SessionLike = {
++  access_token: string;
++  refresh_token: string;
++  expires_at?: number | undefined;
++  expires_in?: number | undefined;
++  user: { id: string; email?: string | undefined; user_metadata?: Record<string, unknown> | undefined };
++};
++
++export function sessionPayload(s: SessionLike) {
++  const meta = s.user.user_metadata ?? {};
++  return {
++    access_token: s.access_token,
++    refresh_token: s.refresh_token,
++    expires_at: s.expires_at ?? Math.floor(Date.now() / 1000) + (s.expires_in ?? 3600),
++    user: {
++      id: s.user.id,
++      email: s.user.email ?? null,
++      name: (meta["full_name"] as string | undefined) ?? (meta["name"] as string | undefined) ?? null,
++      avatar_url: (meta["avatar_url"] as string | undefined) ?? (meta["picture"] as string | undefined) ?? null,
++    },
++  };
++}
++
++export async function exchangeGrant(tokenHash: string) {
++  const sb = anonClient();
++  let { data, error } = await sb.auth.verifyOtp({ token_hash: tokenHash, type: "magiclink" });
++  if (error || !data.session) ({ data, error } = await sb.auth.verifyOtp({ token_hash: tokenHash, type: "email" }));
++  if (error || !data.session) throw new Error("invalid_grant");
++  if (!isAllowedEmail(data.session.user.email)) throw new Error("not_allowed");
++  return sessionPayload(data.session);
++}
++
++export async function refreshExtensionSession(refreshToken: string) {
++  const sb = anonClient();
++  const { data, error } = await sb.auth.refreshSession({ refresh_token: refreshToken });
++  if (error || !data.session) throw new Error("invalid_grant");
++  if (!isAllowedEmail(data.session.user.email)) throw new Error("not_allowed");
++  return sessionPayload(data.session);
++}
++
++/** Revokes only the session that owns this access token (the web app stays signed in). */
++export async function revokeExtensionSession(accessToken: string) {
++  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
++  await supabaseAdmin.auth.admin.signOut(accessToken, "local");
++}
+diff --git a/src/routeTree.gen.ts b/src/routeTree.gen.ts
+index ad2f250..a05d591 100644
+--- a/src/routeTree.gen.ts
++++ b/src/routeTree.gen.ts
+@@ -16,13 +16,17 @@ import { Route as AuthenticatedRecordRouteImport } from './routes/_authenticated
+ import { Route as AuthenticatedSettingsRouteImport } from './routes/_authenticated/settings'
+ import { Route as AuthenticatedUploadRouteImport } from './routes/_authenticated/upload'
+ import { Route as EmbedTokenRouteImport } from './routes/embed.$token'
++import { Route as ExtensionConnectRouteImport } from './routes/extension.connect'
+ import { Route as STokenRouteImport } from './routes/s.$token'
+ import { Route as AuthenticatedRecordingsIdRouteImport } from './routes/_authenticated/recordings.$id'
+ import { Route as ApiPublicCardTokenRouteImport } from './routes/api/public/card.$token'
+ import { Route as ApiPublicV1RecordingsRouteImport } from './routes/api/public/v1/recordings'
+ import { Route as ApiPublicV1UploadsRouteImport } from './routes/api/public/v1/uploads'
++import { Route as ApiPublicV1ExtensionSignoutRouteImport } from './routes/api/public/v1/extension.signout'
++import { Route as ApiPublicV1ExtensionTokenRouteImport } from './routes/api/public/v1/extension.token'
+ import { Route as ApiPublicV1RecordingsIdRouteImport } from './routes/api/public/v1/recordings.$id'
+ import { Route as ApiPublicV1RecordingsIdFinalizeRouteImport } from './routes/api/public/v1/recordings.$id.finalize'
++import { Route as ApiPublicV1RecordingsIdUploadUrlRouteImport } from './routes/api/public/v1/recordings.$id.upload-url'
+ 
+ const IndexRoute = IndexRouteImport.update({
+   id: '/',
+@@ -58,6 +62,11 @@ const EmbedTokenRoute = EmbedTokenRouteImport.update({
+   path: '/embed/$token',
+   getParentRoute: () => rootRouteImport,
+ } as any)
++const ExtensionConnectRoute = ExtensionConnectRouteImport.update({
++  id: '/extension/connect',
++  path: '/extension/connect',
++  getParentRoute: () => rootRouteImport,
++} as any)
+ const STokenRoute = STokenRouteImport.update({
+   id: '/s/$token',
+   path: '/s/$token',
+@@ -84,6 +93,18 @@ const ApiPublicV1UploadsRoute = ApiPublicV1UploadsRouteImport.update({
+   path: '/api/public/v1/uploads',
+   getParentRoute: () => rootRouteImport,
+ } as any)
++const ApiPublicV1ExtensionSignoutRoute =
++  ApiPublicV1ExtensionSignoutRouteImport.update({
++    id: '/api/public/v1/extension/signout',
++    path: '/api/public/v1/extension/signout',
++    getParentRoute: () => rootRouteImport,
++  } as any)
++const ApiPublicV1ExtensionTokenRoute =
++  ApiPublicV1ExtensionTokenRouteImport.update({
++    id: '/api/public/v1/extension/token',
++    path: '/api/public/v1/extension/token',
++    getParentRoute: () => rootRouteImport,
++  } as any)
+ const ApiPublicV1RecordingsIdRoute = ApiPublicV1RecordingsIdRouteImport.update({
+   id: '/$id',
+   path: '/$id',
+@@ -95,6 +116,12 @@ const ApiPublicV1RecordingsIdFinalizeRoute =
+     path: '/finalize',
+     getParentRoute: () => ApiPublicV1RecordingsIdRoute,
+   } as any)
++const ApiPublicV1RecordingsIdUploadUrlRoute =
++  ApiPublicV1RecordingsIdUploadUrlRouteImport.update({
++    id: '/upload-url',
++    path: '/upload-url',
++    getParentRoute: () => ApiPublicV1RecordingsIdRoute,
++  } as any)
+ 
+ export interface FileRoutesByFullPath {
+   '/': typeof IndexRoute
+@@ -103,13 +130,17 @@ export interface FileRoutesByFullPath {
+   '/settings': typeof AuthenticatedSettingsRoute
+   '/upload': typeof AuthenticatedUploadRoute
+   '/embed/$token': typeof EmbedTokenRoute
++  '/extension/connect': typeof ExtensionConnectRoute
+   '/s/$token': typeof STokenRoute
+   '/recordings/$id': typeof AuthenticatedRecordingsIdRoute
+   '/api/public/card/$token': typeof ApiPublicCardTokenRoute
+   '/api/public/v1/recordings': typeof ApiPublicV1RecordingsRouteWithChildren
+   '/api/public/v1/uploads': typeof ApiPublicV1UploadsRoute
++  '/api/public/v1/extension/signout': typeof ApiPublicV1ExtensionSignoutRoute
++  '/api/public/v1/extension/token': typeof ApiPublicV1ExtensionTokenRoute
+   '/api/public/v1/recordings/$id': typeof ApiPublicV1RecordingsIdRouteWithChildren
+   '/api/public/v1/recordings/$id/finalize': typeof ApiPublicV1RecordingsIdFinalizeRoute
++  '/api/public/v1/recordings/$id/upload-url': typeof ApiPublicV1RecordingsIdUploadUrlRoute
+ }
+ export interface FileRoutesByTo {
+   '/': typeof IndexRoute
+@@ -118,13 +149,17 @@ export interface FileRoutesByTo {
+   '/settings': typeof AuthenticatedSettingsRoute
+   '/upload': typeof AuthenticatedUploadRoute
+   '/embed/$token': typeof EmbedTokenRoute
++  '/extension/connect': typeof ExtensionConnectRoute
+   '/s/$token': typeof STokenRoute
+   '/recordings/$id': typeof AuthenticatedRecordingsIdRoute
+   '/api/public/card/$token': typeof ApiPublicCardTokenRoute
+   '/api/public/v1/recordings': typeof ApiPublicV1RecordingsRouteWithChildren
+   '/api/public/v1/uploads': typeof ApiPublicV1UploadsRoute
++  '/api/public/v1/extension/signout': typeof ApiPublicV1ExtensionSignoutRoute
++  '/api/public/v1/extension/token': typeof ApiPublicV1ExtensionTokenRoute
+   '/api/public/v1/recordings/$id': typeof ApiPublicV1RecordingsIdRouteWithChildren
+   '/api/public/v1/recordings/$id/finalize': typeof ApiPublicV1RecordingsIdFinalizeRoute
++  '/api/public/v1/recordings/$id/upload-url': typeof ApiPublicV1RecordingsIdUploadUrlRoute
+ }
+ export interface FileRoutesById {
+   __root__: typeof rootRouteImport
+@@ -135,13 +170,17 @@ export interface FileRoutesById {
+   '/_authenticated/settings': typeof AuthenticatedSettingsRoute
+   '/_authenticated/upload': typeof AuthenticatedUploadRoute
+   '/embed/$token': typeof EmbedTokenRoute
++  '/extension/connect': typeof ExtensionConnectRoute
+   '/s/$token': typeof STokenRoute
+   '/_authenticated/recordings/$id': typeof AuthenticatedRecordingsIdRoute
+   '/api/public/card/$token': typeof ApiPublicCardTokenRoute
+   '/api/public/v1/recordings': typeof ApiPublicV1RecordingsRouteWithChildren
+   '/api/public/v1/uploads': typeof ApiPublicV1UploadsRoute
++  '/api/public/v1/extension/signout': typeof ApiPublicV1ExtensionSignoutRoute
++  '/api/public/v1/extension/token': typeof ApiPublicV1ExtensionTokenRoute
+   '/api/public/v1/recordings/$id': typeof ApiPublicV1RecordingsIdRouteWithChildren
+   '/api/public/v1/recordings/$id/finalize': typeof ApiPublicV1RecordingsIdFinalizeRoute
++  '/api/public/v1/recordings/$id/upload-url': typeof ApiPublicV1RecordingsIdUploadUrlRoute
+ }
+ export interface FileRouteTypes {
+   fileRoutesByFullPath: FileRoutesByFullPath
+@@ -152,13 +191,17 @@ export interface FileRouteTypes {
+     | '/settings'
+     | '/upload'
+     | '/embed/$token'
++    | '/extension/connect'
+     | '/s/$token'
+     | '/recordings/$id'
+     | '/api/public/card/$token'
+     | '/api/public/v1/recordings'
+     | '/api/public/v1/uploads'
++    | '/api/public/v1/extension/signout'
++    | '/api/public/v1/extension/token'
+     | '/api/public/v1/recordings/$id'
+     | '/api/public/v1/recordings/$id/finalize'
++    | '/api/public/v1/recordings/$id/upload-url'
+   fileRoutesByTo: FileRoutesByTo
+   to:
+     | '/'
+@@ -167,13 +210,17 @@ export interface FileRouteTypes {
+     | '/settings'
+     | '/upload'
+     | '/embed/$token'
++    | '/extension/connect'
+     | '/s/$token'
+     | '/recordings/$id'
+     | '/api/public/card/$token'
+     | '/api/public/v1/recordings'
+     | '/api/public/v1/uploads'
++    | '/api/public/v1/extension/signout'
++    | '/api/public/v1/extension/token'
+     | '/api/public/v1/recordings/$id'
+     | '/api/public/v1/recordings/$id/finalize'
++    | '/api/public/v1/recordings/$id/upload-url'
+   id:
+     | '__root__'
+     | '/'
+@@ -183,23 +230,30 @@ export interface FileRouteTypes {
+     | '/_authenticated/settings'
+     | '/_authenticated/upload'
+     | '/embed/$token'
++    | '/extension/connect'
+     | '/s/$token'
+     | '/_authenticated/recordings/$id'
+     | '/api/public/card/$token'
+     | '/api/public/v1/recordings'
+     | '/api/public/v1/uploads'
++    | '/api/public/v1/extension/signout'
++    | '/api/public/v1/extension/token'
+     | '/api/public/v1/recordings/$id'
+     | '/api/public/v1/recordings/$id/finalize'
++    | '/api/public/v1/recordings/$id/upload-url'
+   fileRoutesById: FileRoutesById
+ }
+ export interface RootRouteChildren {
+   IndexRoute: typeof IndexRoute
+   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
+   EmbedTokenRoute: typeof EmbedTokenRoute
++  ExtensionConnectRoute: typeof ExtensionConnectRoute
+   STokenRoute: typeof STokenRoute
+   ApiPublicCardTokenRoute: typeof ApiPublicCardTokenRoute
+   ApiPublicV1RecordingsRoute: typeof ApiPublicV1RecordingsRouteWithChildren
+   ApiPublicV1UploadsRoute: typeof ApiPublicV1UploadsRoute
++  ApiPublicV1ExtensionSignoutRoute: typeof ApiPublicV1ExtensionSignoutRoute
++  ApiPublicV1ExtensionTokenRoute: typeof ApiPublicV1ExtensionTokenRoute
+ }
+ 
+ declare module '@tanstack/react-router' {
+@@ -253,6 +307,13 @@ declare module '@tanstack/react-router' {
+       preLoaderRoute: typeof EmbedTokenRouteImport
+       parentRoute: typeof rootRouteImport
+     }
++    '/extension/connect': {
++      id: '/extension/connect'
++      path: '/extension/connect'
++      fullPath: '/extension/connect'
++      preLoaderRoute: typeof ExtensionConnectRouteImport
++      parentRoute: typeof rootRouteImport
++    }
+     '/s/$token': {
+       id: '/s/$token'
+       path: '/s/$token'
+@@ -288,6 +349,20 @@ declare module '@tanstack/react-router' {
+       preLoaderRoute: typeof ApiPublicV1UploadsRouteImport
+       parentRoute: typeof rootRouteImport
+     }
++    '/api/public/v1/extension/signout': {
++      id: '/api/public/v1/extension/signout'
++      path: '/api/public/v1/extension/signout'
++      fullPath: '/api/public/v1/extension/signout'
++      preLoaderRoute: typeof ApiPublicV1ExtensionSignoutRouteImport
++      parentRoute: typeof rootRouteImport
++    }
++    '/api/public/v1/extension/token': {
++      id: '/api/public/v1/extension/token'
++      path: '/api/public/v1/extension/token'
++      fullPath: '/api/public/v1/extension/token'
++      preLoaderRoute: typeof ApiPublicV1ExtensionTokenRouteImport
++      parentRoute: typeof rootRouteImport
++    }
+     '/api/public/v1/recordings/$id': {
+       id: '/api/public/v1/recordings/$id'
+       path: '/$id'
+@@ -302,6 +377,13 @@ declare module '@tanstack/react-router' {
+       preLoaderRoute: typeof ApiPublicV1RecordingsIdFinalizeRouteImport
+       parentRoute: typeof ApiPublicV1RecordingsIdRoute
+     }
++    '/api/public/v1/recordings/$id/upload-url': {
++      id: '/api/public/v1/recordings/$id/upload-url'
++      path: '/upload-url'
++      fullPath: '/api/public/v1/recordings/$id/upload-url'
++      preLoaderRoute: typeof ApiPublicV1RecordingsIdUploadUrlRouteImport
++      parentRoute: typeof ApiPublicV1RecordingsIdRoute
++    }
+   }
+ }
+ 
+@@ -326,11 +408,14 @@ const AuthenticatedRouteRouteWithChildren =
+ 
+ interface ApiPublicV1RecordingsIdRouteChildren {
+   ApiPublicV1RecordingsIdFinalizeRoute: typeof ApiPublicV1RecordingsIdFinalizeRoute
++  ApiPublicV1RecordingsIdUploadUrlRoute: typeof ApiPublicV1RecordingsIdUploadUrlRoute
+ }
+ 
+ const ApiPublicV1RecordingsIdRouteChildren: ApiPublicV1RecordingsIdRouteChildren =
+   {
+     ApiPublicV1RecordingsIdFinalizeRoute: ApiPublicV1RecordingsIdFinalizeRoute,
++    ApiPublicV1RecordingsIdUploadUrlRoute:
++      ApiPublicV1RecordingsIdUploadUrlRoute,
+   }
+ 
+ const ApiPublicV1RecordingsIdRouteWithChildren =
+@@ -355,10 +440,13 @@ const rootRouteChildren: RootRouteChildren = {
+   IndexRoute: IndexRoute,
+   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
+   EmbedTokenRoute: EmbedTokenRoute,
++  ExtensionConnectRoute: ExtensionConnectRoute,
+   STokenRoute: STokenRoute,
+   ApiPublicCardTokenRoute: ApiPublicCardTokenRoute,
+   ApiPublicV1RecordingsRoute: ApiPublicV1RecordingsRouteWithChildren,
+   ApiPublicV1UploadsRoute: ApiPublicV1UploadsRoute,
++  ApiPublicV1ExtensionSignoutRoute: ApiPublicV1ExtensionSignoutRoute,
++  ApiPublicV1ExtensionTokenRoute: ApiPublicV1ExtensionTokenRoute,
+ }
+ export const routeTree = rootRouteImport
+   ._addFileChildren(rootRouteChildren)
+diff --git a/src/routes/api/public/v1/extension.signout.ts b/src/routes/api/public/v1/extension.signout.ts
+new file mode 100644
+index 0000000..9ed4dee
+--- /dev/null
++++ b/src/routes/api/public/v1/extension.signout.ts
+@@ -0,0 +1,17 @@
++import { createFileRoute } from "@tanstack/react-router";
++import { revokeExtensionSession } from "@/lib/extension-auth.server";
++import { json } from "@/lib/api-http.server";
++
++// POST /api/public/v1/extension/signout — revokes the extension's own session (Bearer access token).
++export const Route = createFileRoute("/api/public/v1/extension/signout")({
++  server: {
++    handlers: {
++      POST: async ({ request }) => {
++        const m = /^Bearer\s+(\S+)$/i.exec((request.headers.get("authorization") ?? "").trim());
++        if (!m || m[1]!.split(".").length !== 3) return json({ error: "unauthorised" }, 401);
++        await revokeExtensionSession(m[1]!).catch(() => {});
++        return json({ ok: true });
++      },
++    },
++  },
++});
+diff --git a/src/routes/api/public/v1/extension.token.ts b/src/routes/api/public/v1/extension.token.ts
+new file mode 100644
+index 0000000..7ae6646
+--- /dev/null
++++ b/src/routes/api/public/v1/extension.token.ts
+@@ -0,0 +1,34 @@
++import { createFileRoute } from "@tanstack/react-router";
++import { z } from "zod";
++import { exchangeGrant, refreshExtensionSession } from "@/lib/extension-auth.server";
++import { json } from "@/lib/api-http.server";
++
++// POST /api/public/v1/extension/token — Chrome extension session exchange and refresh.
++//   { "grant_type": "token_hash", "token_hash": "…" }       → new session
++//   { "grant_type": "refresh_token", "refresh_token": "…" } → rotated session
++// Response: { access_token, refresh_token, expires_at, user: { id, email, name, avatar_url } }
++export const Route = createFileRoute("/api/public/v1/extension/token")({
++  server: {
++    handlers: {
++      POST: async ({ request }) => {
++        const parsed = z
++          .discriminatedUnion("grant_type", [
++            z.object({ grant_type: z.literal("token_hash"), token_hash: z.string().min(10).max(200) }),
++            z.object({ grant_type: z.literal("refresh_token"), refresh_token: z.string().min(6).max(500) }),
++          ])
++          .safeParse(await request.json().catch(() => null));
++        if (!parsed.success) return json({ error: "invalid_request" }, 400);
++        try {
++          const s =
++            parsed.data.grant_type === "token_hash"
++              ? await exchangeGrant(parsed.data.token_hash)
++              : await refreshExtensionSession(parsed.data.refresh_token);
++          return json(s);
++        } catch (e) {
++          const code = e instanceof Error && e.message === "not_allowed" ? "not_allowed" : "invalid_grant";
++          return json({ error: code }, code === "not_allowed" ? 403 : 401);
++        }
++      },
++    },
++  },
++});
+diff --git a/src/routes/api/public/v1/recordings.$id.upload-url.ts b/src/routes/api/public/v1/recordings.$id.upload-url.ts
+new file mode 100644
+index 0000000..eae5379
+--- /dev/null
++++ b/src/routes/api/public/v1/recordings.$id.upload-url.ts
+@@ -0,0 +1,25 @@
++import { createFileRoute } from "@tanstack/react-router";
++import { authenticateApiKey } from "@/lib/apikeys.server";
++import { getOwnedRecording, reissueUpload } from "@/lib/recordings.server";
++import { json, errMsg } from "@/lib/api-http.server";
++
++// POST /api/public/v1/recordings/:id/upload-url — fresh upload token for a recording that is still
++// pending (e.g. the first token expired before a retry). Avoids creating a duplicate recording.
++export const Route = createFileRoute("/api/public/v1/recordings/$id/upload-url")({
++  server: {
++    handlers: {
++      POST: async ({ request, params }) => {
++        const auth = await authenticateApiKey(request);
++        if (!auth) return json({ error: "unauthorised" }, 401);
++        try {
++          const rec = await getOwnedRecording(auth.db, auth.userId, params.id);
++          if (rec.status === "ready") return json({ error: "already_finalised" }, 409);
++          const t = await reissueUpload(auth.db, auth.userId, params.id);
++          return json({ recordingId: rec.id, key: t.key, uploadUrl: t.url, method: "PUT", headers: { Authorization: `Bearer ${t.token}` }, exp: t.exp });
++        } catch (e) {
++          return json({ error: errMsg(e) }, 404);
++        }
++      },
++    },
++  },
++});
+diff --git a/src/routes/extension.connect.tsx b/src/routes/extension.connect.tsx
+new file mode 100644
+index 0000000..dc50b1b
+--- /dev/null
++++ b/src/routes/extension.connect.tsx
+@@ -0,0 +1,137 @@
++import { createFileRoute } from "@tanstack/react-router";
++import { useServerFn } from "@tanstack/react-start";
++import { useEffect, useState } from "react";
++import { Chrome, Loader2, ShieldCheck } from "lucide-react";
++import { Button } from "@/components/ui/button";
++import { Logo } from "@/components/hmo/Logo";
++import { lovable } from "@/integrations/lovable";
++import { supabase } from "@/integrations/supabase/client";
++import { ALLOWED_EMAILS } from "@/lib/hmo-core";
++import { createExtensionGrant } from "@/lib/extension-auth.functions";
++
++// Approval page opened by the Hear Me Out Chrome extension via chrome.identity.launchWebAuthFlow.
++// It never shows or stores credentials: on approval it redirects to the extension's chromiumapp.org
++// callback with a single-use grant that the extension exchanges for its own session.
++export const Route = createFileRoute("/extension/connect")({
++  ssr: false,
++  head: () => ({ meta: [{ title: "Connect Chrome extension — Hear Me Out" }, { name: "robots", content: "noindex" }] }),
++  component: ConnectExtension,
++});
++
++const PENDING_KEY = "hmo-ext-connect";
++const REDIRECT_RE = /^https:\/\/([a-p]{32})\.chromiumapp\.org\/?$/;
++type Pending = { redirectUri: string; state: string };
++
++function readPending(): Pending | null {
++  const q = new URLSearchParams(window.location.search);
++  const redirectUri = q.get("redirect_uri");
++  const state = q.get("state");
++  if (redirectUri && state) {
++    const p = { redirectUri, state };
++    sessionStorage.setItem(PENDING_KEY, JSON.stringify(p));
++    return p;
++  }
++  try {
++    return JSON.parse(sessionStorage.getItem(PENDING_KEY) ?? "null") as Pending | null;
++  } catch {
++    return null;
++  }
++}
++
++function ConnectExtension() {
++  const grant = useServerFn(createExtensionGrant);
++  const [pending, setPending] = useState<Pending | null>(null);
++  const [email, setEmail] = useState<string | null>(null);
++  const [phase, setPhase] = useState<"checking" | "signin" | "approve" | "working" | "error">("checking");
++  const [error, setError] = useState<string | null>(null);
++
++  useEffect(() => {
++    const p = readPending();
++    setPending(p);
++    if (!p || !REDIRECT_RE.test(p.redirectUri) || !/^[\w-]{16,128}$/.test(p.state)) {
++      setPhase("error");
++      setError("This link is incomplete. Open the Hear Me Out extension and choose Sign in with Google again.");
++      return;
++    }
++    supabase.auth.getUser().then(({ data }) => {
++      const e = data.user?.email?.toLowerCase() ?? null;
++      if (data.user && e && ALLOWED_EMAILS.includes(e)) {
++        setEmail(e);
++        setPhase("approve");
++      } else {
++        if (data.user) {
++          void supabase.auth.signOut();
++          setError("That Google account isn't authorised for Hear Me Out.");
++        }
++        setPhase("signin");
++      }
++    });
++  }, []);
++
++  const finish = (fragment: Record<string, string>) => {
++    if (!pending) return;
++    sessionStorage.removeItem(PENDING_KEY);
++    const f = new URLSearchParams({ ...fragment, state: pending.state });
++    window.location.replace(`${pending.redirectUri}#${f.toString()}`);
++  };
++
++  const signIn = async (switchAccount = false) => {
++    setPhase("working");
++    if (switchAccount) await supabase.auth.signOut();
++    const r = await lovable.auth.signInWithOAuth("google", {
++      redirect_uri: `${window.location.origin}/extension/connect`,
++      extraParams: { prompt: "select_account" },
++    });
++    if (r.error) {
++      setError(/authori|not allowed|Database error/i.test(r.error.message) ? "That Google account isn't authorised for Hear Me Out." : r.error.message);
++      setPhase("signin");
++      return;
++    }
++    if (r.redirected) return;
++    window.location.reload();
++  };
++
++  const approve = async () => {
++    setPhase("working");
++    try {
++      const { tokenHash } = await grant({ data: { redirectUri: pending!.redirectUri } });
++      finish({ token_hash: tokenHash });
++    } catch (e) {
++      setError(e instanceof Error ? e.message : "Could not connect the extension.");
++      setPhase("approve");
++    }
++  };
++
++  return (
++    <div className="grid min-h-dvh place-items-center px-5 py-10">
++      <div className="w-full max-w-md animate-rise rounded-[2rem] border bg-card p-7 shadow-soft">
++        <Logo />
++        <h1 className="mt-8 text-2xl font-semibold">Connect Hear Me Out for Chrome</h1>
++        <p className="mt-2 text-sm text-muted-foreground">
++          The extension will be able to record voice notes to your account and list your recordings. It can't see your password and you can sign it out at any time.
++        </p>
++        {error && <p className="mt-4 rounded-2xl bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</p>}
++        {phase === "checking" || phase === "working" ? (
++          <div className="mt-8 grid place-items-center"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>
++        ) : phase === "signin" ? (
++          <div className="mt-8 space-y-3">
++            <Button className="h-12 w-full rounded-full" variant="outline" onClick={() => signIn(false)}>Continue with Google</Button>
++            <Button className="w-full rounded-full" variant="ghost" onClick={() => finish({ error: "access_denied" })}>Cancel</Button>
++          </div>
++        ) : phase === "approve" ? (
++          <div className="mt-6 space-y-3">
++            <div className="flex items-center gap-3 rounded-2xl bg-muted/60 px-4 py-3 text-sm">
++              <ShieldCheck className="size-5 text-primary" />
++              <span className="min-w-0 truncate">Signed in as <strong>{email}</strong></span>
++            </div>
++            <Button className="h-12 w-full rounded-full" variant="hero" onClick={approve}><Chrome /> Connect this Chrome profile</Button>
++            <div className="flex gap-2">
++              <Button className="flex-1 rounded-full" variant="outline" onClick={() => signIn(true)}>Use a different account</Button>
++              <Button className="flex-1 rounded-full" variant="ghost" onClick={() => finish({ error: "access_denied" })}>Cancel</Button>
++            </div>
++          </div>
++        ) : null}
++      </div>
++    </div>
++  );
++}
+diff --git a/src/routes/index.tsx b/src/routes/index.tsx
+index d91eddf..5d64537 100644
+--- a/src/routes/index.tsx
++++ b/src/routes/index.tsx
+@@ -35,7 +35,11 @@ function SignIn() {
+   useEffect(() => {
+     supabase.auth.getUser().then(async ({ data }) => {
+       const email = data.user?.email?.toLowerCase();
+-      if (data.user && email && ALLOWED_EMAILS.includes(email)) navigate({ to: "/record", replace: true });
++      if (data.user && email && ALLOWED_EMAILS.includes(email)) {
++        // Returning from Google sign-in started by the Chrome extension's connect page.
++        if (sessionStorage.getItem("hmo-ext-connect")) navigate({ to: "/extension/connect", replace: true });
++        else navigate({ to: "/record", replace: true });
++      }
+       else {
+         if (data.user) {
+           await supabase.auth.signOut();
+diff --git a/src/test/extension-auth.test.ts b/src/test/extension-auth.test.ts
+new file mode 100644
+index 0000000..d85416e
+--- /dev/null
++++ b/src/test/extension-auth.test.ts
+@@ -0,0 +1,33 @@
++import { afterEach, describe, expect, it } from "vitest";
++import { extensionIdFromRedirect, isAllowedEmail, sessionPayload } from "@/lib/extension-auth.server";
++
++describe("Chrome extension auth", () => {
++  afterEach(() => {
++    delete process.env["HMO_EXTENSION_IDS"];
++  });
++
++  it("only accepts chromiumapp.org callbacks", () => {
++    expect(extensionIdFromRedirect("https://lphpbndpbbdgoglbgglgeckecbeilpjn.chromiumapp.org/")).toBe("lphpbndpbbdgoglbgglgeckecbeilpjn");
++    expect(extensionIdFromRedirect("https://evil.example/")).toBeNull();
++    expect(extensionIdFromRedirect("https://lphpbndpbbdgoglbgglgeckecbeilpjn.chromiumapp.org.evil.example/")).toBeNull();
++    expect(extensionIdFromRedirect("http://lphpbndpbbdgoglbgglgeckecbeilpjn.chromiumapp.org/")).toBeNull();
++  });
++
++  it("enforces HMO_EXTENSION_IDS when set", () => {
++    process.env["HMO_EXTENSION_IDS"] = "lphpbndpbbdgoglbgglgeckecbeilpjn";
++    expect(extensionIdFromRedirect("https://lphpbndpbbdgoglbgglgeckecbeilpjn.chromiumapp.org/")).not.toBeNull();
++    expect(extensionIdFromRedirect("https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.chromiumapp.org/")).toBeNull();
++  });
++
++  it("mirrors the account allow-list", () => {
++    expect(isAllowedEmail("GHALL702@gmail.com")).toBe(true);
++    expect(isAllowedEmail("someone@example.com")).toBe(false);
++    expect(isAllowedEmail(null)).toBe(false);
++  });
++
++  it("returns only the fields the extension needs", () => {
++    const p = sessionPayload({ access_token: "a", refresh_token: "r", expires_in: 3600, user: { id: "u", email: "e@x", user_metadata: { full_name: "G H", picture: "p" } } });
++    expect(p.user).toEqual({ id: "u", email: "e@x", name: "G H", avatar_url: "p" });
++    expect(p.expires_at).toBeGreaterThan(Date.now() / 1000);
++  });
++});

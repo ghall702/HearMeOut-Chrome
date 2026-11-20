@@ -15,6 +15,7 @@ import { Waveform } from "./Waveform";
 type Toast = (t: string, k?: "ok" | "error") => void;
 
 export function ContextChip({ ctx }: { ctx: SiteContext }) {
+  if (!ctx.name) return null;
   return (
     <span className={`chip ${ctx.name ? "" : "neutral"}`}>
       <Globe /> {ctx.name ? `${ctx.name} detected` : "Share this voice note"}
@@ -86,7 +87,7 @@ export function RecordView({
   // idle
   return (
     <div className="stack" style={{ gap: 14 }}>
-      <div className="row">
+      <div className="row" style={{ minHeight: 24 }}>
         <ContextChip ctx={ctx} />
       </div>
       <div className="recorder">
@@ -99,11 +100,6 @@ export function RecordView({
       {perm === "denied" && (
         <Notice kind="warn" icon={<AlertTriangle />}>
           Microphone access is blocked for Hear Me Out. <button type="button" className="btn btn-ghost" style={{ height: 26, padding: "0 6px" }} onClick={() => openPermissionPage(false)}>Fix this</button>
-        </Notice>
-      )}
-      {!auth.signedIn && (
-        <Notice kind="info" icon={<Info />}>
-          {auth.expired ? "Your session has expired." : "You're not signed in."} You can record now and sign in before saving.
         </Notice>
       )}
     </div>
@@ -136,7 +132,7 @@ function LiveRecording({ state, busy, run }: { state: RecState; busy: boolean; r
             <Pause /> Pause
           </button>
         )}
-        <button type="button" className="btn btn-hero btn-lg" disabled={busy} onClick={() => run(() => bg({ type: "rec:stop" }))} autoFocus>
+        <button type="button" className="btn btn-stop btn-lg" disabled={busy} onClick={() => run(() => bg({ type: "rec:stop" }))} autoFocus>
           {busy ? <Loader2 className="spin" /> : <Square />} Stop recording
         </button>
       </div>

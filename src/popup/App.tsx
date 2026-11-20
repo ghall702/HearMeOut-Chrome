@@ -67,7 +67,7 @@ export function App() {
     <div className="app">
       <header className="header">
         <Logo />
-        {live && (
+        {live && view !== "record" && (
           <span className={`rec-pill ${state.phase === "paused" ? "paused" : ""}`}>
             <span className="dot" /> {state.phase === "paused" ? "PAUSED" : "REC"}
           </span>

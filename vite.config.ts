@@ -32,6 +32,8 @@ export default defineConfig(({ mode }) => {
     define: {
       "import.meta.env.VITE_HMO_ORIGIN": JSON.stringify(origins.hmo),
       "import.meta.env.VITE_MEDIA_ORIGIN": JSON.stringify(origins.media),
+      // Only the e2e build may shorten the 15-minute limit (to exercise the limit with the popup closed).
+      "import.meta.env.VITE_MAX_SECONDS": JSON.stringify(e2e ? (process.env["HMO_E2E_MAX_SECONDS"] ?? "") : ""),
     },
     plugins: [react(), manifestPlugin(origins, process.env["HMO_NO_KEY"] !== "1")],
     build: {

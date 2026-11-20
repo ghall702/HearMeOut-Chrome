@@ -61,6 +61,10 @@ export class Recorder {
   get active() {
     return this.s != null && !this.s.stopping;
   }
+  /** True from start until a stop has fully flushed (includes the stopping phase). */
+  get busy() {
+    return this.s != null;
+  }
   get paused() {
     return this.s?.recorder.state === "paused";
   }
